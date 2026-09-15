@@ -32,17 +32,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     x11-utils \
     x11-xserver-utils \
-    xfce4 \
-    xfce4-terminal \
     xorg \
     xserver-xorg-video-dummy \
     xauth \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Selkies provides the browser desktop streaming layer. Its AppImage bundles
-# the web client, capture/encoding extensions, and Python runtime. We attach
-# it to the X.Org display created by this image and use one TCP port.
+# Selkies is the browser streaming layer. The container streams Sober directly
+# instead of presenting a full XFCE desktop.
 RUN set -eux; \
     SELKIES_VERSION="$(curl -fsSL https://api.github.com/repos/selkies-project/selkies/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
     test -n "$SELKIES_VERSION"; \
@@ -59,8 +56,6 @@ COPY xorg.conf /etc/X11/xorg.conf
 COPY scripts/ /opt/roblox-docker/
 COPY supervisord.conf /etc/supervisor/conf.d/roblox.conf
 
-# Docker clients on Windows can check out executable scripts with CRLF.
-# Normalize them inside the image so Linux always sees a valid shebang.
 RUN find /opt/roblox-docker -type f -name '*.sh' -exec sed -i 's/\r$//' {} + \
     && chmod +x /opt/roblox-docker/*.sh
 
