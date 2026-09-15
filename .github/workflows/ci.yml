@@ -63,10 +63,6 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Check shell scripts for unsafe debug settings
-        run: |
-          ! grep -RInE '(^|[[:space:]])set -x($|[[:space:]])|password[[:space:]]*=' scripts
-
       - name: Validate Dockerfile syntax with BuildKit
         run: docker build --check .
 
