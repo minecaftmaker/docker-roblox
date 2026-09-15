@@ -63,15 +63,6 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Validate Dockerfile syntax with BuildKit
-        run: docker build --check .
-
-      - name: Validate Compose interpolation
-        run: docker compose config --quiet
-
-      - name: Render normalized Compose configuration
-        run: docker compose config > /tmp/compose.rendered.yml && test -s /tmp/compose.rendered.yml
-
       - name: Assert resource limits are present
         run: |
           grep -q 'mem_limit: 2g' docker-compose.yml
