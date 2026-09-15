@@ -59,7 +59,10 @@ COPY xorg.conf /etc/X11/xorg.conf
 COPY scripts/ /opt/roblox-docker/
 COPY supervisord.conf /etc/supervisor/conf.d/roblox.conf
 
-RUN chmod +x /opt/roblox-docker/*.sh
+# Docker clients on Windows can check out executable scripts with CRLF.
+# Normalize them inside the image so Linux always sees a valid shebang.
+RUN find /opt/roblox-docker -type f -name '*.sh' -exec sed -i 's/\r$//' {} + \
+    && chmod +x /opt/roblox-docker/*.sh
 
 EXPOSE 6080
 
