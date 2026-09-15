@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
     curl \
+    dbus \
     dbus-x11 \
     flatpak \
     fonts-dejavu \
@@ -43,8 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Selkies provides the browser desktop streaming layer. Its AppImage bundles
 # the web client, capture/encoding extensions, and Python runtime. We attach
-# it to the X.Org display created by this image and use its default WebSocket
-# transport so only one TCP port is required.
+# it to the X.Org display created by this image and use one TCP port.
 RUN set -eux; \
     SELKIES_VERSION="$(curl -fsSL https://api.github.com/repos/selkies-project/selkies/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
     test -n "$SELKIES_VERSION"; \
@@ -53,7 +53,7 @@ RUN set -eux; \
     chmod +x /opt/selkies.AppImage
 
 RUN useradd -m -u 1000 -s /bin/bash roblox \
-    && mkdir -p /run/user/1000 /home/roblox/.var/app /opt/roblox-docker \
+    && mkdir -p /run/user/1000 /home/roblox/.var/app /opt/roblox-docker /run/dbus \
     && chown -R roblox:roblox /run/user/1000 /home/roblox /opt/roblox-docker \
     && chmod 700 /run/user/1000
 
