@@ -1,0 +1,14 @@
+name: Docker build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --pull -t roblox-docker:test .
