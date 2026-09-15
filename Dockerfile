@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN set -eux; \
     SELKIES_VERSION="$(curl -fsSL https://api.github.com/repos/selkies-project/selkies/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
     test -n "$SELKIES_VERSION"; \
-    curl -fsSL "https://github.com/selkies-project/selkies/releases/download/v${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-x86_64.AppImage" \
+    curl -fsSL "https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-x86_64.AppImage" \
       -o /opt/selkies.AppImage; \
     chmod +x /opt/selkies.AppImage
 
