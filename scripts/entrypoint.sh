@@ -17,6 +17,17 @@ fi
 /usr/bin/supervisord -c /etc/supervisor/conf.d/roblox.conf &
 SUPERVISOR_PID=$!
 
+ARCH="$(dpkg --print-architecture)"
+
+# Sober is currently published by Flathub as x86_64 only. Keep the ARM64
+# desktop usable instead of retrying an installation that can never succeed.
+if [ "$ARCH" = "arm64" ]; then
+  echo "[roblox-docker] ARM64 detected. Selkies/XFCE can run natively, but Sober is not currently available for ARM64."
+  echo "[roblox-docker] Roblox will remain unavailable until an ARM64 Sober build is published."
+  wait "$SUPERVISOR_PID"
+  exit $?
+fi
+
 # Configure Flathub. Keep going if the first attempt is temporarily unavailable.
 gosu roblox env HOME=/home/roblox dbus-run-session -- \
   flatpak remote-add --user --if-not-exists flathub \
