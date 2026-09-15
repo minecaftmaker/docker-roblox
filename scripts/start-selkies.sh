@@ -16,7 +16,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-exec /opt/selkies.AppImage \
+exec /opt/selkies.AppImage --appimage-extract-and-run \
   --addr=0.0.0.0,:: \
   --port="${SELKIES_PORT:-6080}" \
   --basic-auth-user="${SELKIES_BASIC_AUTH_USER:-roblox}" \
