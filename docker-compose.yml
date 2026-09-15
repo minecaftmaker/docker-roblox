@@ -3,6 +3,10 @@ services:
     build:
       context: .
     container_name: roblox-docker
+    # Sober is a Flatpak application and its bubblewrap sandbox needs
+    # namespace creation inside the container. Privileged mode provides the
+    # required kernel capabilities on Docker Desktop/WSL2.
+    privileged: true
     ports:
       - "6080:6080"
     volumes:
