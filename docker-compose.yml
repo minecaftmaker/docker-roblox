@@ -19,7 +19,5 @@ services:
       SELKIES_PORT: "6080"
       SELKIES_BASIC_AUTH_USER: "roblox"
       SELKIES_BASIC_AUTH_PASSWORD: "roblox"
-    mem_limit: 2g
-    cpus: 2.0
     shm_size: 1g
     restart: unless-stopped
