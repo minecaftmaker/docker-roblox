@@ -40,13 +40,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Selkies provides the browser desktop streaming layer. Its AppImage bundles
-# the web client, capture/encoding extensions, and Python runtime. We attach
-# it to the X.Org display created by this image and use one TCP port.
+# Selkies publishes both x86_64 and aarch64 AppImages. Pick the one that
+# matches the Docker build architecture instead of hard-coding x86_64.
 RUN set -eux; \
     SELKIES_VERSION="$(curl -fsSL https://api.github.com/repos/selkies-project/selkies/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
     test -n "$SELKIES_VERSION"; \
-    curl -fsSL "https://github.com/selkies-project/selkies/releases/download/v${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-x86_64.AppImage" \
+    case "$(dpkg --print-architecture)" in \
+      amd64) SELKIES_ARCH=x86_64 ;; \
+      arm64) SELKIES_ARCH=aarch64 ;; \
+      *) echo "Unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/selkies-project/selkies/releases/download/v${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-${SELKIES_ARCH}.AppImage" \
       -o /opt/selkies.AppImage; \
     chmod +x /opt/selkies.AppImage
 
