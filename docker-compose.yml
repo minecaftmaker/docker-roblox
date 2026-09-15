@@ -16,7 +16,10 @@ services:
       GALLIUM_DRIVER: "llvmpipe"
       MESA_GL_VERSION_OVERRIDE: "4.6"
       MESA_GLES_VERSION_OVERRIDE: "3.2"
+      SELKIES_PORT: "6080"
+      SELKIES_BASIC_AUTH_USER: "roblox"
+      SELKIES_BASIC_AUTH_PASSWORD: "roblox"
     mem_limit: 2g
     cpus: 2.0
-    shm_size: 512m
+    shm_size: 1g
     restart: unless-stopped
