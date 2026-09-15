@@ -1,0 +1,15 @@
+{
+  "name": "Roblox-Docker",
+  "image": "mcr.microsoft.com/devcontainers/base:debian",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Roblox noVNC",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postCreateCommand": "docker compose build"
+}
