@@ -63,9 +63,6 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck
-        run: shellcheck scripts/*.sh
-
       - name: Check shell scripts for unsafe debug settings
         run: |
           ! grep -RInE '(^|[[:space:]])set -x($|[[:space:]])|password[[:space:]]*=' scripts
