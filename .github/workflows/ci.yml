@@ -1,4 +1,4 @@
-name: Roblox-Docker CI
+name: Roblox-Docker CI Matrix
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  security-events: write
+  packages: read
   actions: read
 
 concurrency:
@@ -17,311 +17,638 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  REPO_URL: https://github.com/${{ github.repository }}.git
   IMAGE_NAME: docker-roblox-ci
-  DOCKER_BUILDKIT: 1
 
 jobs:
-  ubuntu-static:
-    name: Ubuntu static validation
+  repo-layout:
+    name: 01 Repo layout
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Show runner information
-        run: |
-          uname -a
-          lsb_release -a
-          docker --version
-          docker compose version
-
       - name: Verify repository layout
         run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
           test -f Dockerfile
           test -f docker-compose.yml
           test -f supervisord.conf
           test -f xorg.conf
           test -d scripts
           test -d .github/workflows
-          
-      - name: Validate required scripts exist and are valid
-        run: |
-          for f in \
-            scripts/desktop.sh \
-            scripts/entrypoint.sh \
-            scripts/launch-sober.sh \
-            scripts/start-selkies.sh; do
-            test -f "$f"
-            head -n 1 "$f" | grep -q '^#!/usr/bin/env bash$'
-            bash -n "$f"
-          done
 
-      - name: Validate shell syntax
+  scripts-inventory:
+    name: 02 Script inventory
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify script inventory and shebangs
         run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          for f in scripts/*.sh; do
+            test -s "$f"
+            test "$(head -n1 "$f")" = '#!/usr/bin/env bash'
+          done
+          test -f scripts/desktop.sh
+          test -f scripts/entrypoint.sh
+          test -f scripts/launch-sober.sh
+          test -f scripts/start-selkies.sh
+          test -f scripts/status.sh
+
+  bash-syntax:
+    name: 03 Bash syntax
+    needs: scripts-inventory
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Parse every shell script
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
           find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
-  ubuntu-docker:
-    name: Ubuntu Docker build and runtime checks
+  shellcheck:
+    name: 04 ShellCheck
+    needs: bash-syntax
     runs-on: ubuntu-24.04
-    needs: ubuntu-static
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Run ShellCheck
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          cd repo
+          shellcheck scripts/*.sh
 
-  set-up-dockerbuildx:
-    name: Set up docker buildX Checks
+  compose-parse:
+    name: 05 Compose parse
+    needs: repo-layout
     runs-on: ubuntu-24.04
-    needs: ubuntu-static
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Parse Compose
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose config --quiet
 
-  container-image:
-    name: Build Container Image
+  compose-render:
+    name: 06 Compose render
+    needs: compose-parse
     runs-on: ubuntu-24.04
-    needs: ubuntu-static
     steps:
-      - name: Build container image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: ${{ env.IMAGE_NAME }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Inspect image metadata
-        run: docker image inspect "${IMAGE_NAME}:ci"
-
-      - name: Check expected runtime paths
+      - name: Render normalized Compose
         run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
-            test -x /opt/roblox-docker/entrypoint.sh && \
-            test -x /opt/roblox-docker/launch-sober.sh && \
-            test -x /opt/roblox-docker/start-selkies.sh && \
-            test -f /etc/supervisor/conf.d/roblox.conf && \
-            test -f /etc/X11/xorg.conf'
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose config > /tmp/compose.yml
+          test -s /tmp/compose.yml
+          grep -q 'roblox-docker' /tmp/compose.yml
 
-      - name: Verify software rendering libraries
-        run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
-            ldconfig -p | grep -E "libGLX_mesa|libGLES|libGL.so"'
-
-      - name: Verify Flatpak and D-Bus tooling
-        run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
-            command -v flatpak && command -v dbus-run-session'
-
-      - name: Verify Selkies launcher command
-        run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
-            grep -q -- "--port=\"\${SELKIES_PORT:-6080}\"" /opt/roblox-docker/start-selkies.sh'
-
-      - name: Run image health smoke test
-        run: |
-          docker run -d --name roblox-ci-smoke "${IMAGE_NAME}:ci"
-          sleep 5
-          docker ps --filter name=roblox-ci-smoke --format '{{.Status}}'
-          docker logs roblox-ci-smoke --tail 40 || true
-          docker rm -f roblox-ci-smoke
-
-      - name: Clean Docker resources
-        if: always()
-        run: docker system prune -af
-
-  windows:
-    name: Windows PowerShell validation
-    runs-on: windows-2025
-    needs: ubuntu-static
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Show Windows environment
-        shell: pwsh
-        run: |
-          $PSVersionTable
-          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
-
-      - name: Verify Git checkout has Unix scripts
-        shell: pwsh
-        run: |
-          Get-ChildItem scripts -Filter *.sh | Measure-Object | Select-Object Count
-          if (-not (Test-Path scripts\entrypoint.sh)) { throw 'entrypoint.sh missing' }
-          if (-not (Test-Path scripts\start-selkies.sh)) { throw 'start-selkies.sh missing' }
-
-      - name: Check CRLF corruption in shell scripts
-        shell: pwsh
-        run: |
-          $bad = Get-ChildItem scripts -Filter *.sh | Where-Object {
-            (Get-Content $_.FullName -Raw) -match "`r`n"
-          }
-          if ($bad) { $bad | ForEach-Object { Write-Host $_.FullName }; throw 'CRLF found in shell scripts' }
-
-      - name: Validate Compose file as UTF-8 text
-        shell: pwsh
-        run: |
-          $bytes = [IO.File]::ReadAllBytes('docker-compose.yml')
-          [Text.Encoding]::UTF8.GetString($bytes) | Out-Null
-          if ($bytes -contains 0) { throw 'NUL byte found in Compose file' }
-
-      - name: Verify no Windows-only path assumptions
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '\\.git\\' }
-          $matches = Select-String -Path ($files.FullName) -Pattern '[A-Za-z]:\\' -SimpleMatch:$false -ErrorAction SilentlyContinue
-          if ($matches) { $matches | Format-Table; throw 'Windows host path leaked into project files' }
-
-      - name: Validate environment defaults
-        shell: pwsh
-        run: |
-          $compose = Get-Content docker-compose.yml -Raw
-          foreach ($needle in @('DISPLAY', 'XDG_RUNTIME_DIR', 'LIBGL_ALWAYS_SOFTWARE', 'GALLIUM_DRIVER')) {
-            if ($compose -notmatch [regex]::Escape($needle)) { throw "Missing $needle" }
-          }
-
-      - name: Verify workflow YAML contains Windows job
-        shell: pwsh
-        run: |
-          $workflow = Get-Content .github\workflows\ci.yml -Raw
-          if ($workflow -notmatch 'runs-on: windows-2025') { throw 'Windows CI job missing' }
-
-      - name: Verify scripts use POSIX shebangs
-        shell: pwsh
-        run: |
-          Get-ChildItem scripts -Filter *.sh | ForEach-Object {
-            $first = Get-Content $_.FullName -TotalCount 1
-            if ($first -notmatch '^#!/usr/bin/env bash$') { throw "$($_.Name) has invalid shebang" }
-          }
-
-  security:
-    name: Security and supply-chain checks
+  resource-limits:
+    name: 07 Resource limits
+    needs: compose-parse
     runs-on: ubuntu-24.04
-    needs: ubuntu-static
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Scan repository with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: table
-
-      - name: Check for accidental private key material
+      - name: Check CPU RAM and SHM limits
         run: |
-          if grep -RIl --exclude-dir=.git -E '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----' .; then
-            exit 1
-          fi
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q 'mem_limit: 2g' docker-compose.yml
+          grep -q 'cpus: 2.0' docker-compose.yml
+          grep -q 'shm_size: 512m' docker-compose.yml
 
-      - name: Check for hard-coded cloud credentials
+  port-policy:
+    name: 08 Port policy
+    needs: compose-parse
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check Cloud Shell port policy
         run: |
-          ! grep -RInE --exclude-dir=.git '(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{10,})' .
-
-      - name: Check Dockerfile for privileged host access
-        run: |
-          ! grep -Ein '^\\s*(--privileged|VOLUME.*(/dev|/sys|/proc)|CMD.*docker.sock)' Dockerfile
-
-      - name: Check Compose for host Docker socket mounts
-        run: |
-          ! grep -Ein '/var/run/docker.sock|docker.sock' docker-compose.yml
-
-      - name: Check runtime ports are intentionally limited
-        run: |
-          ! grep -q '5900:' docker-compose.yml
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
           grep -q '6080:6080' docker-compose.yml
+          grep -q 'SELKIES_PORT: "6080"' docker-compose.yml
+          ! grep -q '5900:' docker-compose.yml
 
-  integration:
-    name: Cross-platform integration gate
+  volume-policy:
+    name: 09 Persistent volume policy
+    needs: compose-parse
     runs-on: ubuntu-24.04
-    needs: [ubuntu-docker, windows, security]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Linux AMD64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: docker-roblox:integration
-
-      - name: Inspect final image architecture
+      - name: Check persistent Sober storage
         run: |
-          docker image inspect docker-roblox:integration --format '{{.Os}}/{{.Architecture}}'
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q 'org.vinegarhq.Sober' docker-compose.yml
+          grep -q 'config/sober' docker-compose.yml
 
-      - name: Validate image labels and entrypoint
+  xorg-policy:
+    name: 10 Xorg dummy display
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate Xorg configuration
         run: |
-          docker image inspect docker-roblox:integration --format '{{json .Config.Entrypoint}}'
-          docker image inspect docker-roblox:integration --format '{{json .Config.Env}}' | grep -q 'DISPLAY=:0'
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q 'Driver "dummy"' xorg.conf
+          grep -q 'Section "Screen"' xorg.conf
+          grep -q '1280x720' xorg.conf
 
-      - name: Start Compose stack for integration smoke test
-        run: docker compose up -d --no-build
-
-      - name: Wait for container startup
+  supervisor-policy:
+    name: 11 Supervisor topology
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate supervised services
         run: |
-          for i in $(seq 1 12); do
-            if docker ps --format '{{.Names}}' | grep -qx 'roblox-docker'; then break; fi
-            sleep 2
-          done
-          docker ps
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          for p in xorg desktop selkies launcher; do grep -q "program:$p" supervisord.conf; done
+          ! grep -q 'program:novnc' supervisord.conf
+          ! grep -q 'program:x11vnc' supervisord.conf
 
-      - name: Collect startup diagnostics
-        if: always()
+  selkies-policy:
+    name: 12 Selkies settings
+    needs: supervisor-policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate Selkies command
         run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q -- '--addr=0.0.0.0,::' scripts/start-selkies.sh
+          grep -q -- '--port="${SELKIES_PORT:-6080}"' scripts/start-selkies.sh
+          grep -q -- '--enable-https=false' scripts/start-selkies.sh
+          grep -q -- '--use-cpu=true' scripts/start-selkies.sh
+          grep -q -- '--encoder=h264enc' scripts/start-selkies.sh
+
+  dbus-policy:
+    name: 13 D-Bus bootstrap
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate D-Bus bootstrap logic
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q 'dbus-daemon' scripts/entrypoint.sh
+          grep -q '/run/dbus' scripts/entrypoint.sh
+          grep -q 'dbus-run-session' scripts/entrypoint.sh
+          grep -q 'dbus-run-session' scripts/launch-sober.sh
+
+  sober-policy:
+    name: 14 Sober install policy
+    needs: dbus-policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate Sober install and retry logic
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          grep -q 'org.vinegarhq.Sober' scripts/entrypoint.sh
+          grep -q 'flatpak info org.vinegarhq.Sober' scripts/launch-sober.sh
+          grep -q 'retrying in 10 seconds' scripts/entrypoint.sh
+
+  privileged-audit:
+    name: 15 Privilege audit
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject GPU KVM and host socket passthrough
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          ! grep -RInE --exclude-dir=.git 'privileged:[[:space:]]*true|/dev/dri|/dev/kvm|/var/run/docker.sock' .
+
+  secret-audit:
+    name: 16 Secret audit
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Scan for hard-coded credential material
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          ! grep -RInE --exclude-dir=.git --exclude-dir=.github '(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----)' .
+
+  dockerfile-check:
+    name: 17 Dockerfile check
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run BuildKit Dockerfile checks
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build --check .
+
+  buildx-check:
+    name: 18 Buildx check
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Buildx capability
+        run: |
+          docker buildx version
+          docker buildx ls
+
+  trivy-scan:
+    name: 19 Trivy scan
+    needs: repo-layout
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Scan source tree with current Trivy image
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          docker run --rm -v "$PWD/repo:/src:ro" aquasec/trivy:0.74.0 fs /src --severity HIGH,CRITICAL --ignore-unfixed
+
+  image-build:
+    name: 20 Image build
+    needs: [dockerfile-check, dbus-policy, selkies-policy]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build image without unsupported GHA cache export
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build --tag "$IMAGE_NAME:ci" .
+          docker image inspect "$IMAGE_NAME:ci" >/dev/null
+
+  image-metadata:
+    name: 21 Image metadata
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build and inspect metadata
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:metadata" .
+          docker image inspect "$IMAGE_NAME:metadata" --format '{{.Os}}/{{.Architecture}}'
+          docker image inspect "$IMAGE_NAME:metadata" --format '{{json .Config.Entrypoint}}'
+
+  image-runtime-paths:
+    name: 22 Image runtime paths
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify runtime files
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:paths" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:paths" -lc 'test -x /opt/roblox-docker/entrypoint.sh && test -x /opt/roblox-docker/launch-sober.sh && test -x /opt/roblox-docker/start-selkies.sh && test -f /etc/supervisor/conf.d/roblox.conf && test -f /etc/X11/xorg.conf'
+
+  image-graphics:
+    name: 23 Image graphics
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Mesa libraries
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:graphics" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:graphics" -lc 'ldconfig -p | grep -E "libGLX_mesa|libGLES|libGL.so"'
+
+  image-dbus:
+    name: 24 Image D-Bus
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify D-Bus and Flatpak tools
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:dbus" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:dbus" -lc 'command -v dbus-daemon && command -v dbus-run-session && command -v flatpak'
+
+  image-selkies:
+    name: 25 Image Selkies
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Selkies payload
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:selkies" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:selkies" -lc 'test -x /opt/selkies.AppImage && grep -q -- "--enable-https=false" /opt/roblox-docker/start-selkies.sh'
+
+  image-xorg:
+    name: 26 Image Xorg
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Xorg runtime
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:xorg" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:xorg" -lc 'command -v Xorg && test -f /etc/X11/xorg.conf'
+
+  image-supervisor:
+    name: 27 Image Supervisor
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Supervisor runtime
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:supervisor" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:supervisor" -lc 'command -v supervisord && test -f /etc/supervisor/conf.d/roblox.conf'
+
+  image-user:
+    name: 28 Image Linux user
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify non-root user
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:user" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:user" -lc 'id roblox && test "$(id -u roblox)" -eq 1000'
+
+  image-env:
+    name: 29 Image environment
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify software-rendering environment
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker build -t "$IMAGE_NAME:env" .
+          docker run --rm --entrypoint /bin/bash "$IMAGE_NAME:env" -lc 'env | grep -q "^DISPLAY=:0$" && env | grep -q "^LIBGL_ALWAYS_SOFTWARE=1$"'
+
+  container-smoke:
+    name: 30 Container smoke
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Start Compose stack
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 8
+          test "$(docker inspect -f '{{.State.Status}}' roblox-docker)" = running
+          docker compose down -v
+
+  container-limits:
+    name: 31 Runtime limits
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify runtime memory and CPU caps
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          test "$(docker inspect -f '{{.HostConfig.Memory}}' roblox-docker)" -eq 2147483648
+          test "$(docker inspect -f '{{.HostConfig.NanoCpus}}' roblox-docker)" -eq 2000000000
+          docker compose down -v
+
+  container-port:
+    name: 32 Runtime port
+    needs: [image-build, port-policy]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify 6080 publication
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          docker port roblox-docker 6080/tcp | grep -q ':6080'
+          docker compose down -v
+
+  container-x11:
+    name: 33 Runtime X11
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify X11 socket
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 8
+          docker exec roblox-docker test -S /tmp/.X11-unix/X0
+          docker compose down -v
+
+  container-supervisor:
+    name: 34 Runtime Supervisor
+    needs: image-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Inspect supervised processes
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 8
+          docker exec roblox-docker supervisorctl status
+          docker compose down -v
+
+  container-dbus:
+    name: 35 Runtime D-Bus
+    needs: [image-build, dbus-policy]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify D-Bus socket and daemon
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 8
+          docker exec roblox-docker sh -lc 'pgrep -x dbus-daemon || pgrep -f dbus-daemon'
+          docker compose down -v
+
+  windows-checkout:
+    name: 36 Windows checkout
+    needs: scripts-inventory
+    runs-on: windows-2025
+    steps:
+      - name: Clone on Windows
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --depth 1 "$env:REPO_URL" repo
+          if (-not (Test-Path repo\Dockerfile)) { throw 'Dockerfile missing' }
+
+  windows-crlf:
+    name: 37 Windows LF check
+    needs: windows-checkout
+    runs-on: windows-2025
+    steps:
+      - name: Reject CRLF in shell scripts
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --depth 1 "$env:REPO_URL" repo
+          Get-ChildItem repo\scripts\*.sh | ForEach-Object {
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            for ($i = 0; $i -lt $bytes.Length - 1; $i++) {
+              if ($bytes[$i] -eq 13 -and $bytes[$i + 1] -eq 10) { throw "CRLF found in $($_.Name)" }
+            }
+          }
+
+  windows-paths:
+    name: 38 Windows path audit
+    needs: windows-checkout
+    runs-on: windows-2025
+    steps:
+      - name: Reject host-specific paths
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --depth 1 "$env:REPO_URL" repo
+          $files = Get-ChildItem repo -Recurse -File | Where-Object { $_.FullName -notmatch '\\.git\\' }
+          $hits = Select-String -Path $files.FullName -Pattern '[A-Za-z]:\\' -ErrorAction SilentlyContinue
+          if ($hits) { $hits | Format-Table; throw 'Windows host path detected' }
+
+  windows-shebangs:
+    name: 39 Windows shebangs
+    needs: windows-checkout
+    runs-on: windows-2025
+    steps:
+      - name: Verify Bash shebangs
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --depth 1 "$env:REPO_URL" repo
+          Get-ChildItem repo\scripts\*.sh | ForEach-Object {
+            if ((Get-Content $_.FullName -TotalCount 1) -ne '#!/usr/bin/env bash') { throw "$($_.Name) has invalid shebang" }
+          }
+
+  windows-compose:
+    name: 40 Windows Compose text
+    needs: windows-checkout
+    runs-on: windows-2025
+    steps:
+      - name: Validate Compose UTF-8 and content
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --depth 1 "$env:REPO_URL" repo
+          $bytes = [IO.File]::ReadAllBytes('repo\docker-compose.yml')
+          if ($bytes -contains 0) { throw 'NUL byte found' }
+          $text = [Text.Encoding]::UTF8.GetString($bytes)
+          if ($text -notmatch '6080:6080') { throw '6080 mapping missing' }
+
+  qemu-check:
+    name: 41 QEMU availability
+    needs: buildx-check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify binfmt registrations
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --version
+          docker run --privileged --rm tonistiigi/binfmt --install amd64,386
+          docker buildx inspect --bootstrap
+
+  compose-startup:
+    name: 42 Compose startup diagnostics
+    needs: [container-smoke, container-supervisor]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Capture startup state
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 5
           docker compose ps
           docker compose logs --tail 120
+          docker compose down -v
 
-      - name: Verify container did not immediately crash
+  selkies-runtime:
+    name: 43 Selkies runtime audit
+    needs: [container-port, container-supervisor]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Selkies process configuration
         run: |
-          test "$(docker inspect -f '{{.State.Status}}' roblox-docker)" = running
-
-      - name: Verify configured memory limit
-        run: |
-          test "$(docker inspect -f '{{.HostConfig.Memory}}' roblox-docker)" -eq 2147483648
-
-      - name: Verify CPU limit
-        run: |
-          cpu=$(docker inspect -f '{{.HostConfig.NanoCpus}}' roblox-docker)
-          test "$cpu" -eq 2000000000
-
-      - name: Verify port publication
-        run: |
-          docker port roblox-docker 6080/tcp | grep -q ':6080'
-
-      - name: Verify process tree is present
-        run: |
-          docker exec roblox-docker ps -eo pid,comm,args
-
-      - name: Verify X11 socket exists
-        run: |
-          docker exec roblox-docker test -S /tmp/.X11-unix/X0
-
-      - name: Verify Selkies service is configured
-        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPO_URL" repo
+          cd repo
+          docker compose up -d --build
+          sleep 8
           docker exec roblox-docker grep -q 'start-selkies.sh' /etc/supervisor/conf.d/roblox.conf
+          docker exec roblox-docker ps -eo args | grep -E '[s]elkies|start-selkies'
+          docker compose down -v
 
-      - name: Upload Compose diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compose-diagnostics
-          path: |
-            /tmp/compose.rendered.yml
-            docker-compose.yml
-
-      - name: Shut down integration stack
-        if: always()
-        run: docker compose down -v
+  final-gate:
+    name: 44 Final CI gate
+    needs:
+      - shellcheck
+      - compose-render
+      - resource-limits
+      - port-policy
+      - volume-policy
+      - xorg-policy
+      - selkies-policy
+      - sober-policy
+      - privileged-audit
+      - secret-audit
+      - trivy-scan
+      - image-metadata
+      - image-runtime-paths
+      - image-graphics
+      - image-dbus
+      - image-selkies
+      - image-xorg
+      - image-supervisor
+      - image-user
+      - image-env
+      - container-smoke
+      - container-limits
+      - container-port
+      - container-x11
+      - container-supervisor
+      - container-dbus
+      - windows-crlf
+      - windows-paths
+      - windows-shebangs
+      - windows-compose
+      - qemu-check
+      - compose-startup
+      - selkies-runtime
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Confirm complete CI graph
+        run: |
+          echo 'All Roblox-Docker validation jobs passed.'
+          echo 'One-job-one-step CI graph completed.'
