@@ -1,0 +1,357 @@
+name: Roblox-Docker CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: docker-roblox-ci
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  ubuntu-static:
+    name: Ubuntu static validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show runner information
+        run: |
+          uname -a
+          lsb_release -a
+          docker --version
+          docker compose version
+
+      - name: Verify repository layout
+        run: |
+          test -f Dockerfile
+          test -f docker-compose.yml
+          test -f supervisord.conf
+          test -f xorg.conf
+          test -d scripts
+          test -d .github/workflows
+
+      - name: Validate required scripts exist
+        run: |
+          for f in \
+            scripts/desktop.sh \
+            scripts/entrypoint.sh \
+            scripts/launch-sober.sh \
+            scripts/start-selkies.sh; do
+            test -f "$f"
+            test -x "$f"
+          done
+
+      - name: Validate shell syntax
+        run: |
+          find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: shellcheck scripts/*.sh
+
+      - name: Check shell scripts for unsafe debug settings
+        run: |
+          ! grep -RInE '(^|[[:space:]])set -x($|[[:space:]])|password[[:space:]]*=' scripts
+
+      - name: Validate Dockerfile syntax with BuildKit
+        run: docker build --check .
+
+      - name: Validate Compose interpolation
+        run: docker compose config --quiet
+
+      - name: Render normalized Compose configuration
+        run: docker compose config > /tmp/compose.rendered.yml && test -s /tmp/compose.rendered.yml
+
+      - name: Assert resource limits are present
+        run: |
+          grep -q 'mem_limit: 2g' docker-compose.yml
+          grep -q 'cpus: 2.0' docker-compose.yml
+          grep -q 'shm_size: 512m' docker-compose.yml
+
+      - name: Assert Selkies and Cloud Shell port are configured
+        run: |
+          grep -q '6080:6080' docker-compose.yml
+          grep -q 'SELKIES_PORT' docker-compose.yml
+          grep -q 'start-selkies.sh' supervisord.conf
+
+      - name: Validate Xorg configuration
+        run: |
+          grep -q 'Section "Device"' xorg.conf
+          grep -q 'Section "Screen"' xorg.conf
+          grep -q 'Dummy' xorg.conf
+
+      - name: Validate Supervisor configuration references real programs
+        run: |
+          grep -q 'program:xorg' supervisord.conf
+          grep -q 'program:desktop' supervisord.conf
+          grep -q 'program:selkies' supervisord.conf
+          grep -q 'program:launcher' supervisord.conf
+
+  ubuntu-docker:
+    name: Ubuntu Docker build and runtime checks
+    runs-on: ubuntu-24.04
+    needs: ubuntu-static
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Inspect image metadata
+        run: docker image inspect "${IMAGE_NAME}:ci"
+
+      - name: Check expected runtime paths
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
+            test -x /opt/roblox-docker/entrypoint.sh && \
+            test -x /opt/roblox-docker/launch-sober.sh && \
+            test -x /opt/roblox-docker/start-selkies.sh && \
+            test -f /etc/supervisor/conf.d/roblox.conf && \
+            test -f /etc/X11/xorg.conf'
+
+      - name: Verify software rendering libraries
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
+            ldconfig -p | grep -E "libGLX_mesa|libGLES|libGL.so"'
+
+      - name: Verify Flatpak and D-Bus tooling
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
+            command -v flatpak && command -v dbus-run-session'
+
+      - name: Verify Selkies launcher command
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_NAME}:ci" -lc '\
+            grep -q -- "--port=\"\${SELKIES_PORT:-6080}\"" /opt/roblox-docker/start-selkies.sh'
+
+      - name: Run image health smoke test
+        run: |
+          docker run -d --name roblox-ci-smoke "${IMAGE_NAME}:ci"
+          sleep 5
+          docker ps --filter name=roblox-ci-smoke --format '{{.Status}}'
+          docker logs roblox-ci-smoke --tail 40 || true
+          docker rm -f roblox-ci-smoke
+
+      - name: Clean Docker resources
+        if: always()
+        run: docker system prune -af
+
+  windows:
+    name: Windows PowerShell validation
+    runs-on: windows-2025
+    needs: ubuntu-static
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Windows environment
+        shell: pwsh
+        run: |
+          $PSVersionTable
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+
+      - name: Verify Git checkout has Unix scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts -Filter *.sh | Measure-Object | Select-Object Count
+          if (-not (Test-Path scripts\entrypoint.sh)) { throw 'entrypoint.sh missing' }
+          if (-not (Test-Path scripts\start-selkies.sh)) { throw 'start-selkies.sh missing' }
+
+      - name: Check CRLF corruption in shell scripts
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem scripts -Filter *.sh | Where-Object {
+            (Get-Content $_.FullName -Raw) -match "`r`n"
+          }
+          if ($bad) { $bad | ForEach-Object { Write-Host $_.FullName }; throw 'CRLF found in shell scripts' }
+
+      - name: Validate Compose file as UTF-8 text
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('docker-compose.yml')
+          [Text.Encoding]::UTF8.GetString($bytes) | Out-Null
+          if ($bytes -contains 0) { throw 'NUL byte found in Compose file' }
+
+      - name: Verify no Windows-only path assumptions
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '\\.git\\' }
+          $matches = Select-String -Path ($files.FullName) -Pattern '[A-Za-z]:\\' -SimpleMatch:$false -ErrorAction SilentlyContinue
+          if ($matches) { $matches | Format-Table; throw 'Windows host path leaked into project files' }
+
+      - name: Validate environment defaults
+        shell: pwsh
+        run: |
+          $compose = Get-Content docker-compose.yml -Raw
+          foreach ($needle in @('DISPLAY', 'XDG_RUNTIME_DIR', 'LIBGL_ALWAYS_SOFTWARE', 'GALLIUM_DRIVER')) {
+            if ($compose -notmatch [regex]::Escape($needle)) { throw "Missing $needle" }
+          }
+
+      - name: Verify workflow YAML contains Windows job
+        shell: pwsh
+        run: |
+          $workflow = Get-Content .github\workflows\ci.yml -Raw
+          if ($workflow -notmatch 'runs-on: windows-2025') { throw 'Windows CI job missing' }
+
+      - name: Verify scripts use POSIX shebangs
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts -Filter *.sh | ForEach-Object {
+            $first = Get-Content $_.FullName -TotalCount 1
+            if ($first -notmatch '^#!/usr/bin/env bash$') { throw "$($_.Name) has invalid shebang" }
+          }
+
+  security:
+    name: Security and supply-chain checks
+    runs-on: ubuntu-24.04
+    needs: ubuntu-static
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Scan repository with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+
+      - name: Check for accidental private key material
+        run: |
+          if grep -RIl --exclude-dir=.git -E '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----' .; then
+            exit 1
+          fi
+
+      - name: Check for hard-coded cloud credentials
+        run: |
+          ! grep -RInE --exclude-dir=.git '(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{10,})' .
+
+      - name: Check Dockerfile for privileged host access
+        run: |
+          ! grep -Ein '^\\s*(--privileged|VOLUME.*(/dev|/sys|/proc)|CMD.*docker.sock)' Dockerfile
+
+      - name: Check Compose for host Docker socket mounts
+        run: |
+          ! grep -Ein '/var/run/docker.sock|docker.sock' docker-compose.yml
+
+      - name: Check runtime ports are intentionally limited
+        run: |
+          ! grep -q '5900:' docker-compose.yml
+          grep -q '6080:6080' docker-compose.yml
+
+  integration:
+    name: Cross-platform integration gate
+    runs-on: ubuntu-24.04
+    needs: [ubuntu-docker, windows, security]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Linux AMD64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: docker-roblox:integration
+
+      - name: Inspect final image architecture
+        run: |
+          docker image inspect docker-roblox:integration --format '{{.Os}}/{{.Architecture}}'
+
+      - name: Validate image labels and entrypoint
+        run: |
+          docker image inspect docker-roblox:integration --format '{{json .Config.Entrypoint}}'
+          docker image inspect docker-roblox:integration --format '{{json .Config.Env}}' | grep -q 'DISPLAY=:0'
+
+      - name: Start Compose stack for integration smoke test
+        run: docker compose up -d --no-build
+
+      - name: Wait for container startup
+        run: |
+          for i in $(seq 1 12); do
+            if docker ps --format '{{.Names}}' | grep -qx 'roblox-docker'; then break; fi
+            sleep 2
+          done
+          docker ps
+
+      - name: Collect startup diagnostics
+        if: always()
+        run: |
+          docker compose ps
+          docker compose logs --tail 120
+
+      - name: Verify container did not immediately crash
+        run: |
+          test "$(docker inspect -f '{{.State.Status}}' roblox-docker)" = running
+
+      - name: Verify configured memory limit
+        run: |
+          test "$(docker inspect -f '{{.HostConfig.Memory}}' roblox-docker)" -eq 2147483648
+
+      - name: Verify CPU limit
+        run: |
+          cpu=$(docker inspect -f '{{.HostConfig.NanoCpus}}' roblox-docker)
+          test "$cpu" -eq 2000000000
+
+      - name: Verify port publication
+        run: |
+          docker port roblox-docker 6080/tcp | grep -q ':6080'
+
+      - name: Verify process tree is present
+        run: |
+          docker exec roblox-docker ps -eo pid,comm,args
+
+      - name: Verify X11 socket exists
+        run: |
+          docker exec roblox-docker test -S /tmp/.X11-unix/X0
+
+      - name: Verify Selkies service is configured
+        run: |
+          docker exec roblox-docker grep -q 'start-selkies.sh' /etc/supervisor/conf.d/roblox.conf
+
+      - name: Upload Compose diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-diagnostics
+          path: |
+            /tmp/compose.rendered.yml
+            docker-compose.yml
+
+      - name: Shut down integration stack
+        if: always()
+        run: docker compose down -v
