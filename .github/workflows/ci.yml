@@ -43,8 +43,8 @@ jobs:
           test -f xorg.conf
           test -d scripts
           test -d .github/workflows
-
-      - name: Validate required scripts exist
+          
+      - name: Validate required scripts exist and are valid
         run: |
           for f in \
             scripts/desktop.sh \
@@ -52,7 +52,8 @@ jobs:
             scripts/launch-sober.sh \
             scripts/start-selkies.sh; do
             test -f "$f"
-            test -x "$f"
+            head -n 1 "$f" | grep -q '^#!/usr/bin/env bash$'
+            bash -n "$f"
           done
 
       - name: Validate shell syntax
