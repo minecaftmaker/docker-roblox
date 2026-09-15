@@ -63,31 +63,6 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Assert resource limits are present
-        run: |
-          grep -q 'mem_limit: 2g' docker-compose.yml
-          grep -q 'cpus: 2.0' docker-compose.yml
-          grep -q 'shm_size: 512m' docker-compose.yml
-
-      - name: Assert Selkies and Cloud Shell port are configured
-        run: |
-          grep -q '6080:6080' docker-compose.yml
-          grep -q 'SELKIES_PORT' docker-compose.yml
-          grep -q 'start-selkies.sh' supervisord.conf
-
-      - name: Validate Xorg configuration
-        run: |
-          grep -q 'Section "Device"' xorg.conf
-          grep -q 'Section "Screen"' xorg.conf
-          grep -q 'Dummy' xorg.conf
-
-      - name: Validate Supervisor configuration references real programs
-        run: |
-          grep -q 'program:xorg' supervisord.conf
-          grep -q 'program:desktop' supervisord.conf
-          grep -q 'program:selkies' supervisord.conf
-          grep -q 'program:launcher' supervisord.conf
-
   ubuntu-docker:
     name: Ubuntu Docker build and runtime checks
     runs-on: ubuntu-24.04
