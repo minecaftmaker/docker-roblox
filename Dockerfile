@@ -11,9 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MESA_GLES_VERSION_OVERRIDE=3.2 \
     ROBLOX_WIDTH=1280 \
     ROBLOX_HEIGHT=720 \
-    SELKIES_PORT=6080 \
-    SELKIES_BASIC_AUTH_USER=roblox \
-    SELKIES_BASIC_AUTH_PASSWORD=roblox
+    SELKIES_PORT=6080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
