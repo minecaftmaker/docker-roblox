@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-mkdir -p /run/user/1000 /home/roblox/.var/app
+mkdir -p /run/user/1000 /home/roblox/.var/app /run/dbus
 chown -R roblox:roblox /run/user/1000 /home/roblox/.var
 chmod 700 /run/user/1000
+
+# Flatpak needs a system D-Bus socket even when the Flatpak itself is a
+# per-user installation. Minimal containers do not start dbus automatically.
+if [ ! -S /run/dbus/system_bus_socket ]; then
+  echo "[roblox-docker] Starting system D-Bus..."
+  dbus-daemon --system --fork
+fi
 
 # Start the desktop/streaming stack immediately. Sober may take several
 # minutes to download, so installation must never be allowed to kill PID 1.
