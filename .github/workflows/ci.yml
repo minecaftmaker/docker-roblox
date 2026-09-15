@@ -71,9 +71,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+  set-up-dockerbuildx:
+    name: Set up docker buildX Checks
+    runs-on: ubuntu-24.04
+    needs: ubuntu-static
+    steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+  container-image:
+    name: Build Container Image
+    runs-on: ubuntu-24.04
+    needs: ubuntu-static
+    steps:
       - name: Build container image
         uses: docker/build-push-action@v6
         with:
