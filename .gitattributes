@@ -1,0 +1,7 @@
+# Keep executable/container scripts in Unix LF format even on Windows hosts.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
